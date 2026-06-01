@@ -198,6 +198,62 @@ std::string build_soap(
   return s.str();
 }
 
+// Zeep-compatible SOAP envelope builder.
+//
+// Matches the wire format produced by Python's onvif-zeep library, which
+// some cameras (e.g. Swann NHD-887F / Hikvision-OEM) require for
+// CreatePullPointSubscription.  Differences from the standard build_soap():
+//
+//   - Uses "wsa:" prefix for WS-Addressing (not "wsa5:").
+//   - Includes wsa:MessageID (urn:uuid:...).
+//   - Header element order: Action, MessageID, To, Security.
+//   - No mustUnderstand on Security or Action/To.
+//   - No WSU:Timestamp wrapper; wsu:Created lives directly inside
+//     UsernameToken.
+std::string build_soap_zeep(
+  const std::string& username,
+  const std::string& password,
+  const std::string& wsa_to,
+  const std::string& wsa_action,
+  const std::string& ref_params = "") {
+  WSSecurity ws = make_wssecurity(password);
+
+  std::ostringstream s;
+  s << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       "<soap-env:Envelope"
+       " xmlns:soap-env=\"http://www.w3.org/2003/05/soap-envelope\">"
+       "<soap-env:Header"
+       " xmlns:wsa=\"http://www.w3.org/2005/08/addressing\">"
+       "<wsa:Action>" << wsa_action << "</wsa:Action>"
+       "<wsa:MessageID>urn:uuid:" << util::generate_uuid()
+    << "</wsa:MessageID>"
+       "<wsa:To>" << wsa_to << "</wsa:To>"
+       "<wsse:Security"
+       " xmlns:wsse=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\">"  // NOLINT(whitespace/line_length)
+       "<wsse:UsernameToken>"
+       "<wsse:Username>" << username << "</wsse:Username>"
+       "<wsse:Password Type=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest\">"  // NOLINT(whitespace/line_length)
+    << ws.digest << "</wsse:Password>"
+       "<wsse:Nonce EncodingType=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary\">"  // NOLINT(whitespace/line_length)
+    << ws.nonce_b64 << "</wsse:Nonce>"
+       "<wsu:Created xmlns:wsu=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">"  // NOLINT(whitespace/line_length)
+    << ws.created << "</wsu:Created>"
+       "</wsse:UsernameToken>"
+       "</wsse:Security>";
+
+  if (!ref_params.empty())
+    s << ref_params;
+
+  s << "</soap-env:Header>"
+       "<soap-env:Body>"
+       "<tev:CreatePullPointSubscription"
+       " xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\"/>"
+       "</soap-env:Body>"
+       "</soap-env:Envelope>\n";
+
+  return s.str();
+}
+
 // -------------------------------------------------------
 // HTTP POST via libcurl
 // -------------------------------------------------------
@@ -449,21 +505,33 @@ class CameraWorker {
       const auto candidates = event_service_candidates(sv.event_url);
       absl::StatusOr<Subscription> sub_or = absl::InternalError("no candidates");
       for (const auto& candidate : candidates) {
-        LOG(INFO) << '[' << cfg_.ip << "] trying event service: " << candidate;
-        sub_or = create_subscription(candidate);
+        // Try default request first; fall back to Zeep-compatible
+        // request on failure.  Use the first combination that produces
+        // a valid SubscriptionReference URL.
+        for (int variant = 0; variant < 2; ++variant) {
+          const bool zeep = (variant == 1);
+          LOG(INFO) << '[' << cfg_.ip << "] trying event service: " << candidate
+                    << (zeep ? " (zeep)" : "");
+          if (zeep)
+            sub_or = create_subscription_zeep(candidate);
+          else
+            sub_or = create_subscription(candidate);
+          if (sub_or.ok() && !sub_or->url.empty()) break;
+          LOG(INFO) << '[' << cfg_.ip << "] " << (zeep ? "zeep" : "default")
+                    << " attempt on " << candidate << " failed: "
+                    << (sub_or.ok()
+                      ? "empty subscription URL"
+                      : std::string(sub_or.status().message()));
+        }
         if (sub_or.ok() && !sub_or->url.empty()) break;
-        LOG(INFO) << '[' << cfg_.ip << "] event service " << candidate
-                  << " failed: " << (sub_or.ok()
-                    ? "empty subscription URL"
-                    : std::string(sub_or.status().message()));
       }
-      // Guard: create_subscription returns ok() with empty url when the
-      // camera replied HTTP 200 but the response body had no valid
-      // SubscriptionReference.  Convert to an error so the retry logic
-      // below fires correctly on the next iteration.
+      // Guard: both create_subscription and create_subscription_zeep
+      // return ok() with empty url when the camera replied HTTP 200 but
+      // the response body had no valid SubscriptionReference.  Convert
+      // to an error so the retry logic below fires on the next iteration.
       if (sub_or.ok() && sub_or->url.empty()) {
         sub_or = absl::InternalError(
-            "all event service candidates returned empty subscription URL");
+            "all subscription attempts returned empty URL");
       }
       if (!sub_or.ok()) {
         if (consecutive_failures == 0)
@@ -810,6 +878,71 @@ class CameraWorker {
     // Successful subscription -- whatever auth we used here works.
     // Clear any stale "needs ONVIF Administrator" badge so a camera
     // that was once flagged but is now healthy stops nagging the user.
+    clear_camera_needs_onvif_admin(cfg_.ip);
+    return sub;
+  }
+
+  // Zeep-compatible CreatePullPointSubscription.
+  //
+  // Matches the wire format that Python's onvif-zeep library produces.
+  // Some cameras (Swann NHD-887F / Hikvision-OEM) reject the standard
+  // request but accept this format.  Used as a per-endpoint fallback
+  // when create_subscription() fails.
+  //
+  // Key differences from create_subscription():
+  //   - WS-Addressing headers (Action, MessageID, To) in wsa: prefix.
+  //   - No InitialTerminationTime in body.
+  //   - Empty self-closing <tev:CreatePullPointSubscription/> body element.
+  //   - No mustUnderstand on any header element.
+  absl::StatusOr<Subscription> create_subscription_zeep(
+      const std::string& ev_url) {
+    static const char* ACTION =
+      "http://www.onvif.org/ver10/events/wsdl/EventPortType/"
+      "CreatePullPointSubscriptionRequest";
+
+    auto soap = build_soap_zeep(cfg_.user, cfg_.password, ev_url, ACTION);
+    auto resp_or = soap_post_r(ev_url, soap, ACTION, 20);
+    if (!resp_or.ok()) return resp_or.status();
+
+    const HttpResponse& resp = *resp_or;
+    if (resp.status_code != 200) {
+      LOG(ERROR) << '[' << cfg_.ip
+                 << "] Zeep CreatePullPointSubscription HTTP "
+                 << resp.status_code << " on " << ev_url
+                 << "\n  request:\n" << soap
+                 << "\n  response:\n" << resp.body;
+      return Subscription{};
+    }
+
+    auto doc_or = XmlDoc::Create(resp.body);
+    if (!doc_or.ok()) {
+      LOG(ERROR) << '[' << cfg_.ip
+                 << "] Zeep CreatePullPointSubscription XML parse error on "
+                 << ev_url << ": " << doc_or.status().message()
+                 << "\n  request:\n" << soap
+                 << "\n  response:\n" << resp.body;
+      return Subscription{};
+    }
+
+    Subscription sub;
+    sub.url = XmlDoc::trim(
+      doc_or->text("//*[local-name()='SubscriptionReference']"
+                   "/*[local-name()='Address']"));
+    sub.ref_params = doc_or->inner_xml(
+      "//*[local-name()='SubscriptionReference']"
+      "/*[local-name()='ReferenceParameters']");
+    if (sub.url.empty()) {
+      LOG(ERROR) << '[' << cfg_.ip
+                 << "] Zeep CreatePullPointSubscription:"
+                    " no SubscriptionReference/Address in response from "
+                 << ev_url
+                 << "\n  request:\n" << soap
+                 << "\n  response:\n" << resp.body;
+      return Subscription{};
+    }
+    if (!sub.ref_params.empty())
+      LOG(INFO) << '[' << cfg_.ip
+                << "] zeep subscription has ReferenceParameters";
     clear_camera_needs_onvif_admin(cfg_.ip);
     return sub;
   }

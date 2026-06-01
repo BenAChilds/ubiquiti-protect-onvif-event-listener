@@ -366,3 +366,51 @@ class GenericMotionTopiclessEmulator : public OnvifCameraEmulator {
   bool       subscribed_{false};
   int        event_seq_{0};
 };
+
+// ============================================================
+// ZeepFallbackEmulator -- exercises the Zeep-compatible subscription
+// fallback path.
+//
+// /onvif/event_service returns HTTP 500 for all subscription variants.
+// /onvif/events_service:
+//   - default subscription request (with InitialTerminationTime):
+//     returns HTTP 500 with empty body.
+//   - Zeep-compatible request (with wsa:MessageID, no
+//     InitialTerminationTime): returns HTTP 200 with a valid
+//     SubscriptionReference.
+//
+// Verifies the recorder tries both request variants per endpoint.
+// ============================================================
+class ZeepFallbackEmulator : public OnvifCameraEmulator {
+ public:
+  ZeepFallbackEmulator();
+
+ protected:
+  std::pair<int, std::string> handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) override;
+
+ private:
+  std::mutex mu_;
+  bool       subscribed_{false};
+};
+
+// ============================================================
+// AllFailEmulator -- every endpoint and every subscription variant
+// returns HTTP 500.  Verifies the recorder does not proceed to
+// PullMessages with an empty subscription URL.
+// ============================================================
+class AllFailEmulator : public OnvifCameraEmulator {
+ public:
+  AllFailEmulator();
+
+ protected:
+  std::pair<int, std::string> handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) override;
+
+ private:
+  std::mutex mu_;
+};

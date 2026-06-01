@@ -929,3 +929,93 @@ std::pair<int, std::string> GenericMotionTopiclessEmulator::handle(
 
   return {400, ""};
 }
+
+// ============================================================
+// ZeepFallbackEmulator
+// ============================================================
+ZeepFallbackEmulator::ZeepFallbackEmulator()
+  : OnvifCameraEmulator("192.168.100.203") {}
+
+std::pair<int, std::string> ZeepFallbackEmulator::handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const auto tail = action_tail(soap_action);
+
+  if (tail == "GetServicesRequest") {
+    // Advertise /onvif/event_service (which will fail).
+    std::string resp =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+      "<SOAP-ENV:Envelope"
+      "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+      "  xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\""
+      "  xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+      "<SOAP-ENV:Body>"
+      "<tds:GetServicesResponse>"
+      "<tds:Service>"
+      "<tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace>"
+      "<tds:XAddr>http://" + real_ip_ + "/onvif/event_service</tds:XAddr>"
+      "<tds:Version>"
+      "<tt:Major>2</tt:Major><tt:Minor>60</tt:Minor>"
+      "</tds:Version>"
+      "</tds:Service>"
+      "</tds:GetServicesResponse>"
+      "</SOAP-ENV:Body>"
+      "</SOAP-ENV:Envelope>";
+    return {200, rewrite_urls(resp)};
+  }
+
+  if (tail != "CreatePullPointSubscriptionRequest")
+    return {400, ""};
+
+  // /onvif/event_service always fails.
+  if (path == "/onvif/event_service")
+    return {500, ""};
+
+  // /onvif/events_service: default request fails, zeep succeeds.
+  if (path == "/onvif/events_service") {
+    // Zeep requests include wsa:MessageID; default requests do not.
+    const bool is_zeep = (body.find("MessageID") != std::string::npos);
+
+    if (tail == "CreatePullPointSubscriptionRequest") {
+      if (!is_zeep)
+        return {500, ""};
+      subscribed_ = true;
+      std::string addr =
+        "http://" + real_ip_ + "/onvif/events_service?session=60";
+      return {200, rewrite_urls(make_create_sub_response(addr))};
+    }
+
+    if (tail == "PullMessagesRequest")
+      return {200, rewrite_urls(make_pull_motion_event())};
+
+    if (tail == "RenewRequest")
+      return {200, rewrite_urls(make_renew_response())};
+  }
+
+  return {400, ""};
+}
+
+// ============================================================
+// AllFailEmulator
+// ============================================================
+AllFailEmulator::AllFailEmulator()
+  : OnvifCameraEmulator("192.168.100.204") {}
+
+std::pair<int, std::string> AllFailEmulator::handle(
+    const std::string& /*path*/,
+    const std::string& soap_action,
+    const std::string& /*body*/) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const auto tail = action_tail(soap_action);
+
+  if (tail == "GetServicesRequest")
+    return {500, ""};
+
+  // Every subscription attempt fails.
+  if (tail == "CreatePullPointSubscriptionRequest")
+    return {500, ""};
+
+  return {400, ""};
+}

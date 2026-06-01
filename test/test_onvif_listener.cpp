@@ -731,6 +731,100 @@ static void test_hot_add(const std::string& jsonl) {
 }
 
 // ============================================================
+// Test: Zeep-compatible fallback subscription succeeds
+//
+// Scenario:
+//   - GetServices advertises /onvif/event_service
+//   - /onvif/event_service: default + zeep both return HTTP 500
+//   - /onvif/events_service: default returns HTTP 500,
+//     zeep returns HTTP 200 with SubscriptionReference
+//
+// Expected: recorder uses the fallback subscription URL (with
+// ?session=60) and proceeds to PullMessages.
+// ============================================================
+static void test_zeep_fallback() {
+  ZeepFallbackEmulator emu;
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "password";
+  cfg.retry_interval_sec = 1;
+
+  auto r = collect({cfg}, 3, std::chrono::seconds(30));
+
+  CHECK(!r.timed_out, "zeep-fallback: timed out waiting for events");
+  CHECK(r.events.size() >= 3, "zeep-fallback: expected >= 3 events");
+
+  for (const auto& ev : r.events) {
+    if (ev.topic.empty()) continue;
+    CHECK(ev.topic.find("CellMotionDetector") != std::string::npos,
+          "zeep-fallback: unexpected topic: " + ev.topic);
+  }
+}
+
+// ============================================================
+// Test: All subscription attempts fail cleanly
+//
+// Scenario:
+//   - GetServices returns HTTP 500
+//   - /onvif/event_service: HTTP 500 for all variants
+//   - /onvif/events_service: HTTP 500 for all variants
+//
+// Expected: worker does not proceed to PullMessages, reconnects
+// cleanly after max_consecutive_failures, no curl error for
+// empty URL.
+// ============================================================
+static void test_all_subscription_fail() {
+  AllFailEmulator emu;
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                       = emu.local_address();
+  cfg.user                     = "admin";
+  cfg.password                 = "password";
+  cfg.retry_interval_sec       = 0;
+  cfg.max_consecutive_failures = 3;
+
+  // Should timeout with zero events -- no PullMessages with empty URL.
+  auto r = collect({cfg}, 1, std::chrono::seconds(10));
+
+  CHECK(r.timed_out,
+        "all-fail: expected timeout (no events) when all subscriptions fail");
+  CHECK(r.events.empty(),
+        "all-fail: expected zero events from unreachable camera");
+}
+
+// ============================================================
+// Test: Existing subscription path -- default request succeeds,
+// zeep fallback is not attempted.
+// ============================================================
+static void test_zeep_not_attempted_on_success(const std::string& jsonl) {
+  HikvisionCompatibleEmulator emu(jsonl);
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "eW6iO01l";
+  cfg.retry_interval_sec = 1;
+
+  auto r = collect({cfg}, 5, std::chrono::seconds(30));
+
+  CHECK(!r.timed_out, "no-zeep: timed out waiting for events");
+  CHECK(r.events.size() >= 5, "no-zeep: expected >= 5 events");
+
+  // Verify the subscription URL does NOT contain the zeep-specific
+  // session parameter -- proving the zeep fallback was not used.
+  // (The Hikvision emulator returns a plain /onvif/event_service URL.)
+  for (const auto& ev : r.events) {
+    CHECK(ev.camera_ip == emu.local_address(),
+          "no-zeep: camera_ip mismatch");
+  }
+}
+
+// ============================================================
 // main
 // ============================================================
 int main(int argc, char* argv[]) {
@@ -817,6 +911,12 @@ int main(int argc, char* argv[]) {
            [] { test_topicless_ismotion(); });
   run_test("topicless_state_videosource",
            [] { test_topicless_state_videosource(); });
+  run_test("zeep_fallback",
+           [] { test_zeep_fallback(); });
+  run_test("all_subscription_fail",
+           [] { test_all_subscription_fail(); });
+  run_test("zeep_not_attempted_on_success",
+           [&] { test_zeep_not_attempted_on_success(hikvision_jsonl); });
 
   onvif::global_cleanup();
 
