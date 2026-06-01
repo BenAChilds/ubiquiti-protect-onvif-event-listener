@@ -198,6 +198,27 @@ std::string build_soap(
   return s.str();
 }
 
+// Compute WS-Security UsernameToken PasswordDigest.
+//
+// digest = Base64(SHA1(nonce_bytes || created || password))
+//
+// @param nonce_raw   Raw nonce bytes (NOT base64).
+// @param created     The exact Created timestamp string that will appear
+//                    in the XML.  Byte-for-byte identical.
+// @param password    Plain-text password.
+std::string wsse_digest(const unsigned char* nonce_raw, size_t nonce_len,
+                        const std::string& created,
+                        const std::string& password) {
+  std::vector<unsigned char> pre;
+  pre.reserve(nonce_len + created.size() + password.size());
+  pre.insert(pre.end(), nonce_raw, nonce_raw + nonce_len);
+  pre.insert(pre.end(), created.begin(), created.end());
+  pre.insert(pre.end(), password.begin(), password.end());
+  unsigned char hash[SHA_DIGEST_LENGTH];
+  SHA1(pre.data(), pre.size(), hash);
+  return base64_encode(hash, SHA_DIGEST_LENGTH);
+}
+
 // Zeep-compatible SOAP envelope builder.
 //
 // Matches the wire format produced by Python's onvif-zeep library, which
@@ -232,14 +253,11 @@ std::string build_soap_zeep(
   RAND_bytes(nonce, sizeof(nonce));
   std::string nonce_b64 = base64_encode(nonce, sizeof(nonce));
 
-  std::vector<unsigned char> pre;
-  pre.reserve(16 + created.size() + password.size());
-  pre.insert(pre.end(), nonce, nonce + 16);
-  pre.insert(pre.end(), created.begin(), created.end());
-  pre.insert(pre.end(), password.begin(), password.end());
-  unsigned char hash[SHA_DIGEST_LENGTH];
-  SHA1(pre.data(), pre.size(), hash);
-  std::string digest = base64_encode(hash, SHA_DIGEST_LENGTH);
+  std::string digest = wsse_digest(nonce, sizeof(nonce), created, password);
+
+  VLOG(1) << "zeep WS-Security: created=" << created
+          << " nonce_b64=" << nonce_b64
+          << " digest=" << digest;
 
   std::ostringstream s;
   s << "<soap-env:Envelope"

@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -21,6 +22,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <openssl/sha.h>
 
 #include "onvif_listener.hpp"
 #include "camera_emulators.hpp"
@@ -825,6 +828,59 @@ static void test_zeep_not_attempted_on_success(const std::string& jsonl) {
 }
 
 // ============================================================
+// Test: WS-Security PasswordDigest formula
+//
+// Verifies that the digest is computed as:
+//   Base64(SHA1(raw_nonce_bytes + created_utf8 + password_utf8))
+//
+// Uses fixed inputs so the expected output is deterministic.
+// Matches Python's: base64.b64encode(hashlib.sha1(
+//     nonce_bytes + created.encode() + password.encode()).digest())
+// ============================================================
+static void test_wsse_digest_formula() {
+  // Fixed inputs
+  const unsigned char nonce[16] = {
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
+  };
+  const std::string created  = "2026-06-01T10:03:57+00:00";
+  const std::string password = "testpass123";
+
+  // Expected digest from Python:
+  //   base64.b64encode(hashlib.sha1(
+  //       nonce + created.encode() + password.encode()).digest()).decode()
+  const std::string expected = "5uS1oQN90clItKGZ1EyszLvFuFI=";
+
+  // Replicate the same computation the recorder performs.
+  std::vector<unsigned char> pre;
+  pre.reserve(16 + created.size() + password.size());
+  pre.insert(pre.end(), nonce, nonce + 16);
+  pre.insert(pre.end(), created.begin(), created.end());
+  pre.insert(pre.end(), password.begin(), password.end());
+
+  unsigned char hash[SHA_DIGEST_LENGTH];
+  SHA1(pre.data(), pre.size(), hash);
+
+  // Minimal base64 encoder for the test.
+  static const char B64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string digest;
+  digest.reserve(28);
+  for (int i = 0; i < 20; i += 3) {
+    unsigned char b0 = hash[i];
+    unsigned char b1 = (i + 1 < 20) ? hash[i + 1] : 0;
+    unsigned char b2 = (i + 2 < 20) ? hash[i + 2] : 0;
+    digest += B64[b0 >> 2];
+    digest += B64[((b0 & 0x03) << 4) | (b1 >> 4)];
+    digest += (i + 1 < 20) ? B64[((b1 & 0x0f) << 2) | (b2 >> 6)] : '=';
+    digest += (i + 2 < 20) ? B64[b2 & 0x3f] : '=';
+  }
+
+  CHECK(digest == expected,
+        "wsse-digest: expected " + expected + " got " + digest);
+}
+
+// ============================================================
 // main
 // ============================================================
 int main(int argc, char* argv[]) {
@@ -917,6 +973,8 @@ int main(int argc, char* argv[]) {
            [] { test_all_subscription_fail(); });
   run_test("zeep_not_attempted_on_success",
            [&] { test_zeep_not_attempted_on_success(hikvision_jsonl); });
+  run_test("wsse_digest_formula",
+           [] { test_wsse_digest_formula(); });
 
   onvif::global_cleanup();
 
