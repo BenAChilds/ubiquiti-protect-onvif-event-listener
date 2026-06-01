@@ -896,6 +896,30 @@ class CameraWorker {
       fill_items(".//tt:Source/tt:SimpleItem", n.source);
       fill_items(".//tt:Data/tt:SimpleItem",   n.data);
 
+      // Infer topic for cameras (e.g. Swann NHD-887F / Hikvision-OEM) that
+      // emit valid tt:Message motion state but leave wsnt:Topic empty.
+      if (n.topic.empty()) {
+        auto motion_it = n.data.find("IsMotion");
+        auto rule_it   = n.source.find("Rule");
+
+        if (motion_it != n.data.end() &&
+            rule_it != n.source.end() &&
+            rule_it->second.find("Motion") != std::string::npos) {
+          n.topic = "tns1:RuleEngine/CellMotionDetector/Motion";
+        }
+
+        if (n.topic.empty()) {
+          auto state_it  = n.data.find("State");
+          auto source_it = n.source.find("Source");
+
+          if (state_it != n.data.end() &&
+              source_it != n.source.end() &&
+              source_it->second.find("VideoSource") != std::string::npos) {
+            n.topic = "tns1:VideoSource/MotionAlarm";
+          }
+        }
+      }
+
       // Extract optional tt:BoundingBox from analytics events.
       // ONVIF uses [-1,1] coordinate space; convert to normalised [0,1].
       {

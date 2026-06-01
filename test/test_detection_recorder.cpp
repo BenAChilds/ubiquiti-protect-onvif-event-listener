@@ -296,6 +296,123 @@ static std::string make_human_shape_response(bool state, const std::string& utc_
     "</s:Envelope>";
 }
 
+// Swann/Hikvision-OEM style: empty topic with IsMotion data (CellMotionDetector pattern)
+static std::string make_swann_is_motion_response(bool is_motion, const std::string& utc_time) {
+  const std::string val = is_motion ? "true" : "false";
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<s:Envelope"
+    " xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
+    " xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+    " xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    " xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+    "<s:Body>"
+    "<tev:PullMessagesResponse>"
+    "<wsnt:NotificationMessage>"
+    "<wsnt:Topic Dialect=\"http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet\"/>"
+    "<wsnt:Message>"
+    "<tt:Message UtcTime=\"" + utc_time + "\" PropertyOperation=\"Changed\">"
+    "<tt:Source>"
+    "<tt:SimpleItem Name=\"VideoSourceConfigurationToken\" Value=\"VideoSourceToken\"/>"
+    "<tt:SimpleItem Name=\"VideoAnalyticsConfigurationToken\" Value=\"VideoAnalyticsToken\"/>"
+    "<tt:SimpleItem Name=\"Rule\" Value=\"MyMotionDetectorRule\"/>"
+    "</tt:Source>"
+    "<tt:Data>"
+    "<tt:SimpleItem Name=\"IsMotion\" Value=\"" + val + "\"/>"
+    "</tt:Data>"
+    "</tt:Message>"
+    "</wsnt:Message>"
+    "</wsnt:NotificationMessage>"
+    "</tev:PullMessagesResponse>"
+    "</s:Body>"
+    "</s:Envelope>";
+}
+
+// Swann/Hikvision-OEM style: empty topic with State data (VideoSource/MotionAlarm pattern)
+static std::string make_swann_state_response(bool state, const std::string& utc_time) {
+  const std::string val = state ? "true" : "false";
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<s:Envelope"
+    " xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
+    " xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+    " xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    " xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+    "<s:Body>"
+    "<tev:PullMessagesResponse>"
+    "<wsnt:NotificationMessage>"
+    "<wsnt:Topic Dialect=\"http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet\"/>"
+    "<wsnt:Message>"
+    "<tt:Message UtcTime=\"" + utc_time + "\" PropertyOperation=\"Changed\">"
+    "<tt:Source>"
+    "<tt:SimpleItem Name=\"Source\" Value=\"VideoSourceToken\"/>"
+    "</tt:Source>"
+    "<tt:Data>"
+    "<tt:SimpleItem Name=\"State\" Value=\"" + val + "\"/>"
+    "</tt:Data>"
+    "</tt:Message>"
+    "</wsnt:Message>"
+    "</wsnt:NotificationMessage>"
+    "</tev:PullMessagesResponse>"
+    "</s:Body>"
+    "</s:Envelope>";
+}
+
+// Negative test: empty topic with non-motion data
+static std::string make_empty_topic_non_motion_response(const std::string& utc_time) {
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<s:Envelope"
+    " xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
+    " xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+    " xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    " xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+    "<s:Body>"
+    "<tev:PullMessagesResponse>"
+    "<wsnt:NotificationMessage>"
+    "<wsnt:Topic Dialect=\"http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet\"/>"
+    "<wsnt:Message>"
+    "<tt:Message UtcTime=\"" + utc_time + "\" PropertyOperation=\"Changed\">"
+    "<tt:Source>"
+    "<tt:SimpleItem Name=\"SomeSource\" Value=\"SomeValue\"/>"
+    "</tt:Source>"
+    "<tt:Data>"
+    "<tt:SimpleItem Name=\"SomeData\" Value=\"true\"/>"
+    "</tt:Data>"
+    "</tt:Message>"
+    "</wsnt:Message>"
+    "</wsnt:NotificationMessage>"
+    "</tev:PullMessagesResponse>"
+    "</s:Body>"
+    "</s:Envelope>";
+  const std::string val = state ? "true" : "false";
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<s:Envelope"
+    " xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
+    " xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+    " xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    " xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+    "<s:Body>"
+    "<tev:PullMessagesResponse>"
+    "<wsnt:NotificationMessage>"
+    "<wsnt:Topic>tns1:UserAlarm/IVA/HumanShapeDetect</wsnt:Topic>"
+    "<wsnt:Message>"
+    "<tt:Message UtcTime=\"" + utc_time + "\" PropertyOperation=\"Changed\">"
+    "<tt:Source>"
+    "<tt:SimpleItem Name=\"VideoSourceConfigurationToken\" Value=\"VideoSourceMain\"/>"
+    "</tt:Source>"
+    "<tt:Data>"
+    "<tt:SimpleItem Name=\"State\" Value=\"" + val + "\"/>"
+    "</tt:Data>"
+    "</tt:Message>"
+    "</wsnt:Message>"
+    "</wsnt:NotificationMessage>"
+    "</tev:PullMessagesResponse>"
+    "</s:Body>"
+    "</s:Envelope>";
+}
+
 // ============================================================
 // SnapshotSyntheticEmulator
 //
@@ -2686,6 +2803,279 @@ static void test_version_gate_rich_path_on_7_1() {
   onvif::protect_version::ResetForTesting();
 }
 
+// ============================================================
+// Swann/Hikvision-OEM topic-less motion tests
+// ============================================================
+
+// Test: Swann-style IsMotion=true event with empty topic → classified as generic motion
+static void test_swann_is_motion_true(const std::string& ubv_dir) {
+  auto backend = std::make_unique<MockBackend>();
+  MockBackend* bptr = backend.get();
+
+  auto rec_or = onvif::DetectionRecorder::CreateWithBackend(std::move(backend));
+  if (!rec_or.ok()) {
+    CHECK(false, std::string("CreateWithBackend failed: ")
+                 + std::string(rec_or.status().message()));
+    return;
+  }
+  onvif::DetectionRecorder& recorder = **rec_or;
+  recorder.set_ubv_dir(ubv_dir);
+
+  auto jpeg = load_file(source_dir() + "testdata/snapshot_108.jpg");
+  SnapshotSyntheticEmulator emu("192.168.1.240",
+    {make_swann_is_motion_response(true,  "2026-06-01T06:27:21Z"),
+     make_swann_is_motion_response(false, "2026-06-01T06:27:37Z")},
+    jpeg);
+  emu.start();
+
+  bool ok = run_single_camera(emu, recorder, 2);
+  CHECK(ok, "swann_is_motion_true: timed out");
+
+  int events = static_cast<int>(bptr->events.size());
+  CHECK(events == 1,
+        "swann_is_motion_true: expected 1 detection, got " + std::to_string(events));
+
+  // Should use fallback type (default "person")
+  int person_sdo = 0;
+  for (auto& s : bptr->sdos) if (s.obj_type == "person") ++person_sdo;
+  CHECK(person_sdo == 1,
+        "swann_is_motion_true: expected 1 person SDO (fallback), got "
+        + std::to_string(person_sdo));
+
+  int sdr = static_cast<int>(bptr->sdrs.size());
+  CHECK(sdr == 1,
+        "swann_is_motion_true: expected 1 smartDetectRaws row, got "
+        + std::to_string(sdr));
+}
+
+// Test: Swann-style IsMotion=false event → detection ends
+static void test_swann_is_motion_false(const std::string& ubv_dir) {
+  auto backend = std::make_unique<MockBackend>();
+  MockBackend* bptr = backend.get();
+
+  auto rec_or = onvif::DetectionRecorder::CreateWithBackend(std::move(backend));
+  if (!rec_or.ok()) {
+    CHECK(false, std::string("CreateWithBackend failed: ")
+                 + std::string(rec_or.status().message()));
+    return;
+  }
+  onvif::DetectionRecorder& recorder = **rec_or;
+  recorder.set_ubv_dir(ubv_dir);
+
+  auto jpeg = load_file(source_dir() + "testdata/snapshot_108.jpg");
+  SnapshotSyntheticEmulator emu("192.168.1.241",
+    {make_swann_is_motion_response(true,  "2026-06-01T06:27:21Z"),
+     make_swann_is_motion_response(false, "2026-06-01T06:27:37Z")},
+    jpeg);
+  emu.start();
+
+  bool ok = run_single_camera(emu, recorder, 2);
+  CHECK(ok, "swann_is_motion_false: timed out");
+
+  int events = static_cast<int>(bptr->events.size());
+  CHECK(events == 1,
+        "swann_is_motion_false: expected 1 event, got " + std::to_string(events));
+
+  // Event should be ended
+  int open_events = 0;
+  for (auto& e : bptr->events) if (!e.ended) ++open_events;
+  CHECK(open_events == 0,
+        "swann_is_motion_false: expected 0 open events, got "
+        + std::to_string(open_events));
+}
+
+// Test: Swann-style State=true event with empty topic → classified as generic motion
+static void test_swann_state_true(const std::string& ubv_dir) {
+  auto backend = std::make_unique<MockBackend>();
+  MockBackend* bptr = backend.get();
+
+  auto rec_or = onvif::DetectionRecorder::CreateWithBackend(std::move(backend));
+  if (!rec_or.ok()) {
+    CHECK(false, std::string("CreateWithBackend failed: ")
+                 + std::string(rec_or.status().message()));
+    return;
+  }
+  onvif::DetectionRecorder& recorder = **rec_or;
+  recorder.set_ubv_dir(ubv_dir);
+
+  auto jpeg = load_file(source_dir() + "testdata/snapshot_108.jpg");
+  SnapshotSyntheticEmulator emu("192.168.1.242",
+    {make_swann_state_response(true,  "2026-06-01T06:27:21Z"),
+     make_swann_state_response(false, "2026-06-01T06:27:37Z")},
+    jpeg);
+  emu.start();
+
+  bool ok = run_single_camera(emu, recorder, 2);
+  CHECK(ok, "swann_state_true: timed out");
+
+  int events = static_cast<int>(bptr->events.size());
+  CHECK(events == 1,
+        "swann_state_true: expected 1 detection, got " + std::to_string(events));
+
+  // Should use fallback type (default "person")
+  int person_sdo = 0;
+  for (auto& s : bptr->sdos) if (s.obj_type == "person") ++person_sdo;
+  CHECK(person_sdo == 1,
+        "swann_state_true: expected 1 person SDO (fallback), got "
+        + std::to_string(person_sdo));
+
+  int sdr = static_cast<int>(bptr->sdrs.size());
+  CHECK(sdr == 1,
+        "swann_state_true: expected 1 smartDetectRaws row, got "
+        + std::to_string(sdr));
+}
+
+// Test: Swann-style State=false event → detection ends
+static void test_swann_state_false(const std::string& ubv_dir) {
+  auto backend = std::make_unique<MockBackend>();
+  MockBackend* bptr = backend.get();
+
+  auto rec_or = onvif::DetectionRecorder::CreateWithBackend(std::move(backend));
+  if (!rec_or.ok()) {
+    CHECK(false, std::string("CreateWithBackend failed: ")
+                 + std::string(rec_or.status().message()));
+    return;
+  }
+  onvif::DetectionRecorder& recorder = **rec_or;
+  recorder.set_ubv_dir(ubv_dir);
+
+  auto jpeg = load_file(source_dir() + "testdata/snapshot_108.jpg");
+  SnapshotSyntheticEmulator emu("192.168.1.243",
+    {make_swann_state_response(true,  "2026-06-01T06:27:21Z"),
+     make_swann_state_response(false, "2026-06-01T06:27:37Z")},
+    jpeg);
+  emu.start();
+
+  bool ok = run_single_camera(emu, recorder, 2);
+  CHECK(ok, "swann_state_false: timed out");
+
+  int events = static_cast<int>(bptr->events.size());
+  CHECK(events == 1,
+        "swann_state_false: expected 1 event, got " + std::to_string(events));
+
+  // Event should be ended
+  int open_events = 0;
+  for (auto& e : bptr->events) if (!e.ended) ++open_events;
+  CHECK(open_events == 0,
+        "swann_state_false: expected 0 open events, got "
+        + std::to_string(open_events));
+}
+
+// Test: Empty topic with non-motion data → not classified as detection
+static void test_empty_topic_non_motion(const std::string& ubv_dir) {
+  auto backend = std::make_unique<MockBackend>();
+  MockBackend* bptr = backend.get();
+
+  auto rec_or = onvif::DetectionRecorder::CreateWithBackend(std::move(backend));
+  if (!rec_or.ok()) {
+    CHECK(false, std::string("CreateWithBackend failed: ")
+                 + std::string(rec_or.status().message()));
+    return;
+  }
+  onvif::DetectionRecorder& recorder = **rec_or;
+  recorder.set_ubv_dir(ubv_dir);
+
+  auto jpeg = load_file(source_dir() + "testdata/snapshot_108.jpg");
+  SnapshotSyntheticEmulator emu("192.168.1.244",
+    {make_empty_topic_non_motion_response("2026-06-01T06:27:21Z"),
+     make_empty_topic_non_motion_response("2026-06-01T06:27:37Z")},
+    jpeg);
+  emu.start();
+
+  // These events should not produce detections, so we can't wait for them.
+  // Instead, just give the emulator a moment and check that no events were created.
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "password";
+  cfg.snapshot_url       = emu.snapshot_url();
+  cfg.retry_interval_sec = 1;
+  recorder.set_snapshot(cfg);
+
+  std::mutex              mu;
+  std::condition_variable cv;
+  std::atomic<int>        events_seen{0};
+
+  onvif::OnvifListener listener;
+  listener.add_camera(cfg);
+
+  std::thread t([&] {
+    listener.run([&](const onvif::OnvifEvent& ev) {
+      recorder.on_event(ev);
+      // Count all events including empty-topic ones
+      if (++events_seen >= 2) cv.notify_one();
+    });
+  });
+
+  bool timed_out;
+  {
+    std::unique_lock<std::mutex> lk(mu);
+    timed_out = !cv.wait_for(lk, std::chrono::seconds(30),
+                              [&] { return events_seen.load() >= 2; });
+  }
+
+  listener.stop();
+  t.join();
+
+  // We should have received the events (the parser still delivers them)
+  CHECK(!timed_out, "empty_topic_non_motion: timed out waiting for events");
+
+  // But no detections should have been created
+  int events = static_cast<int>(bptr->events.size());
+  CHECK(events == 0,
+        "empty_topic_non_motion: expected 0 detections, got " + std::to_string(events));
+
+  int sdos = static_cast<int>(bptr->sdos.size());
+  CHECK(sdos == 0,
+        "empty_topic_non_motion: expected 0 SDOs, got " + std::to_string(sdos));
+}
+
+// Test: Swann-style with per-camera override → override type respected
+static void test_swann_camera_object_type_override(const std::string& ubv_dir) {
+  auto backend = std::make_unique<MockBackend>();
+  MockBackend* bptr = backend.get();
+
+  auto rec_or = onvif::DetectionRecorder::CreateWithBackend(std::move(backend));
+  if (!rec_or.ok()) {
+    CHECK(false, std::string("CreateWithBackend failed: ")
+                 + std::string(rec_or.status().message()));
+    return;
+  }
+  onvif::DetectionRecorder& recorder = **rec_or;
+  recorder.set_ubv_dir(ubv_dir);
+
+  auto jpeg = load_file(source_dir() + "testdata/snapshot_108.jpg");
+  SnapshotSyntheticEmulator emu("192.168.1.245",
+    {make_swann_is_motion_response(true,  "2026-06-01T06:27:21Z"),
+     make_swann_is_motion_response(false, "2026-06-01T06:27:37Z")},
+    jpeg);
+  emu.start();
+
+  // Override to "animal" for this camera
+  recorder.set_camera_object_type(emu.local_address(), "animal");
+
+  bool ok = run_single_camera(emu, recorder, 2);
+  CHECK(ok, "swann_camera_object_type_override: timed out");
+
+  int events = static_cast<int>(bptr->events.size());
+  CHECK(events == 1,
+        "swann_camera_object_type_override: expected 1 event, got "
+        + std::to_string(events));
+
+  // Should use overridden type "animal"
+  int animal_sdo = 0;
+  for (auto& s : bptr->sdos) if (s.obj_type == "animal") ++animal_sdo;
+  CHECK(animal_sdo == 1,
+        "swann_camera_object_type_override: expected 1 animal SDO (override), got "
+        + std::to_string(animal_sdo));
+
+  if (!bptr->events.empty()) {
+    CHECK(bptr->events[0].sdt_json == "[\"animal\"]",
+          "swann_camera_object_type_override: expected sdt_json=[\"animal\"], got "
+          + bptr->events[0].sdt_json);
+  }
+}
+
 int main() {
   const std::string ubv_dir = "/tmp/test_dr_thumbs";
 
@@ -2738,6 +3128,19 @@ int main() {
            [] { test_version_gate_legacy_path_unchanged(); });
   run_test("version_gate_rich_path_on_7_1",
            [] { test_version_gate_rich_path_on_7_1(); });
+  // Swann/Hikvision-OEM topic-less motion tests
+  run_test("swann_is_motion_true",
+           [&] { test_swann_is_motion_true(ubv_dir); });
+  run_test("swann_is_motion_false",
+           [&] { test_swann_is_motion_false(ubv_dir); });
+  run_test("swann_state_true",
+           [&] { test_swann_state_true(ubv_dir); });
+  run_test("swann_state_false",
+           [&] { test_swann_state_false(ubv_dir); });
+  run_test("empty_topic_non_motion",
+           [&] { test_empty_topic_non_motion(ubv_dir); });
+  run_test("swann_camera_object_type_override",
+           [&] { test_swann_camera_object_type_override(ubv_dir); });
 
   onvif::global_cleanup();
 
