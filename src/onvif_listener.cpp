@@ -443,7 +443,20 @@ class CameraWorker {
       // Re-runs on every outer loop iteration so a camera restart is handled cleanly.
       const DiscoveredServices sv = discover_services();
 
-      auto sub_or = create_subscription(sv.event_url);
+      // Build ordered candidate list: discovered URL first, then the two
+      // common ONVIF event endpoint paths.  Try each in turn; use the first
+      // where CreatePullPointSubscription succeeds.
+      const auto candidates = event_service_candidates(sv.event_url);
+      absl::StatusOr<Subscription> sub_or = absl::InternalError("no candidates");
+      for (const auto& candidate : candidates) {
+        LOG(INFO) << '[' << cfg_.ip << "] trying event service: " << candidate;
+        sub_or = create_subscription(candidate);
+        if (sub_or.ok() && !sub_or->url.empty()) break;
+        LOG(INFO) << '[' << cfg_.ip << "] event service " << candidate
+                  << " failed: " << (sub_or.ok()
+                    ? "empty subscription URL"
+                    : std::string(sub_or.status().message()));
+      }
       if (!sub_or.ok()) {
         if (consecutive_failures == 0)
           streak_start = std::chrono::steady_clock::now();
@@ -469,29 +482,6 @@ class CameraWorker {
       }
 
       const Subscription& sub = *sub_or;
-      if (sub.url.empty()) {
-        if (consecutive_failures == 0)
-          streak_start = std::chrono::steady_clock::now();
-        ++consecutive_failures;
-        if (max_failures > 0 && consecutive_failures >= max_failures) {
-          pause_and_reset(&consecutive_failures, streak_start, window_sec,
-              std::string("[") + cfg_.ip +
-              "] failed to get subscription URL after " +
-              std::to_string(consecutive_failures) +
-              " consecutive attempts -- pausing before retry");
-          continue;
-        }
-        LOG_FIRST_N(ERROR, 1) << '[' << cfg_.ip
-                             << "] failed to get subscription URL"
-                             << ", retrying in " << cfg_.retry_interval_sec
-                             << "s"
-                             << (max_failures > 0
-                                   ? " (" + std::to_string(consecutive_failures) +
-                                     "/" + std::to_string(max_failures) + ")"
-                                   : "");
-        sleep_interruptible(cfg_.retry_interval_sec);
-        continue;
-      }
 
       // Successful subscription -- reset the failure counter.
       consecutive_failures = 0;
@@ -617,8 +607,30 @@ class CameraWorker {
     return cfg_.http_base() + "/onvif/event_service";
   }
 
+  std::string events_url() const {
+    return cfg_.http_base() + "/onvif/events_service";
+  }
+
   std::string device_url() const {
     return cfg_.http_base() + "/onvif/device_service";
+  }
+
+  // Build an ordered list of event service URLs to try.
+  // The discovered URL (from GetServices) is first if it differs from the
+  // two built-in defaults, followed by the two common ONVIF event endpoint
+  // paths.  Duplicate URLs are suppressed so each path is tried at most once.
+  std::vector<std::string> event_service_candidates(
+      const std::string& discovered_url) const {
+    std::vector<std::string> candidates;
+    auto add_unique = [&candidates](const std::string& url) {
+      for (const auto& c : candidates)
+        if (c == url) return;
+      candidates.push_back(url);
+    };
+    add_unique(discovered_url);
+    add_unique(event_url());
+    add_unique(events_url());
+    return candidates;
   }
 
   // Calls GetServices (with capabilities) on the device management endpoint to

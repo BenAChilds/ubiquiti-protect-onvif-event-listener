@@ -157,6 +157,13 @@ reboot takes longer than expected, restart the service:
 systemctl restart onvif-recorder
 ```
 
+**ONVIF event endpoint compatibility:** The recorder automatically tries both
+common ONVIF event service paths (`/onvif/event_service` and
+`/onvif/events_service`) when subscribing to camera events. Some cameras
+(e.g. Swann NHD-887F) use the plural `/onvif/events_service` endpoint instead
+of the more common `/onvif/event_service`. No configuration is needed — the
+recorder discovers the correct endpoint automatically.
+
 ---
 
 ## Building from source

@@ -253,8 +253,8 @@ class ReolinkCameraEmulator : public OnvifCameraEmulator {
 // UosEmulator -- fake UOS external automation manager (port 11010 role)
 //
 // Accepts:
-//   GET  /api/v1/alarms         → returns the configured alarm list JSON
-//   POST /api/v1/alarms/events  → records the request body, returns "{}"
+//   GET  /api/v1/alarms         -> returns the configured alarm list JSON
+//   POST /api/v1/alarms/events  -> records the request body, returns "{}"
 //
 // Used by test_detection_recorder to verify that AlarmNotifier sends the
 // correct requests to UOS when a person or vehicle detection is recorded.
@@ -283,4 +283,86 @@ class UosEmulator : public OnvifCameraEmulator {
   mutable std::mutex       mu_;
   std::string              alarms_json_{"[]"};
   std::vector<std::string> posted_;
+};
+
+// ============================================================
+// EventServiceFallbackEmulator -- exercises the /onvif/events_service
+// fallback path.
+//
+// GetServices succeeds but advertises no usable events XAddr.
+// /onvif/event_service returns HTTP 500 with empty body.
+// /onvif/events_service returns a valid CreatePullPointSubscription
+// response and subsequent motion events.
+//
+// Verifies the recorder tries both endpoint paths and uses the first
+// that succeeds.
+// ============================================================
+class EventServiceFallbackEmulator : public OnvifCameraEmulator {
+ public:
+  EventServiceFallbackEmulator();
+
+ protected:
+  std::pair<int, std::string> handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) override;
+
+ private:
+  std::mutex mu_;
+  bool       subscribed_{false};
+};
+
+// ============================================================
+// GetServicesFailsFallbackEmulator -- exercises the fallback path when
+// GetServices fails entirely.
+//
+// GetServices returns HTTP 500.
+// /onvif/event_service returns HTTP 500 with empty body.
+// /onvif/events_service returns a valid CreatePullPointSubscription
+// response and subsequent motion events.
+//
+// Verifies the recorder falls back through all candidates even when
+// service discovery fails completely.
+// ============================================================
+class GetServicesFailsFallbackEmulator : public OnvifCameraEmulator {
+ public:
+  GetServicesFailsFallbackEmulator();
+
+ protected:
+  std::pair<int, std::string> handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) override;
+
+ private:
+  std::mutex mu_;
+  bool       subscribed_{false};
+};
+
+// ============================================================
+// GenericMotionTopiclessEmulator -- camera that emits motion events
+// with empty wsnt:Topic but valid tt:Message data.
+//
+// Style 1 (IsMotion): Data has IsMotion=true/false, Source has Rule
+//   containing "Motion".  Listener should infer CellMotionDetector/Motion.
+// Style 2 (State/VideoSource): Data has State=true/false, Source has
+//   Source containing "VideoSourceToken".  Listener should infer
+//   VideoSource/MotionAlarm.
+// ============================================================
+class GenericMotionTopiclessEmulator : public OnvifCameraEmulator {
+ public:
+  /// @param style  1 = IsMotion style, 2 = State/VideoSource style
+  explicit GenericMotionTopiclessEmulator(int style);
+
+ protected:
+  std::pair<int, std::string> handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) override;
+
+ private:
+  int        style_;
+  std::mutex mu_;
+  bool       subscribed_{false};
+  int        event_seq_{0};
 };

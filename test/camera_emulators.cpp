@@ -629,3 +629,303 @@ std::pair<int, std::string> UosEmulator::handle(
   }
   return {404, ""};
 }
+
+// ============================================================
+// Helpers shared by fallback emulators
+// ============================================================
+namespace {
+
+// Build a synthetic CreatePullPointSubscription response with a valid
+// SubscriptionReference pointing to the given address.
+std::string make_create_sub_response(const std::string& address) {
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<SOAP-ENV:Envelope"
+    "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+    "  xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    "  xmlns:wsa5=\"http://www.w3.org/2005/08/addressing\""
+    "  xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\">"
+    "<SOAP-ENV:Body>"
+    "<tev:CreatePullPointSubscriptionResponse>"
+    "<tev:SubscriptionReference>"
+    "<wsa5:Address>" + address + "</wsa5:Address>"
+    "</tev:SubscriptionReference>"
+    "<wsnt:CurrentTime>2026-01-01T00:00:00Z</wsnt:CurrentTime>"
+    "<wsnt:TerminationTime>2026-01-01T00:02:00Z</wsnt:TerminationTime>"
+    "</tev:CreatePullPointSubscriptionResponse>"
+    "</SOAP-ENV:Body>"
+    "</SOAP-ENV:Envelope>";
+}
+
+// Build a PullMessages response with one CellMotionDetector motion event.
+std::string make_pull_motion_event() {
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<SOAP-ENV:Envelope"
+    "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+    "  xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    "  xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+    "  xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+    "<SOAP-ENV:Body>"
+    "<tev:PullMessagesResponse>"
+    "<tev:CurrentTime>2026-01-01T00:00:00Z</tev:CurrentTime>"
+    "<tev:TerminationTime>2026-01-01T00:02:00Z</tev:TerminationTime>"
+    "<wsnt:NotificationMessage>"
+    "<wsnt:Topic"
+    "  Dialect=\"http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet\">"
+    "tns1:RuleEngine/CellMotionDetector/Motion"
+    "</wsnt:Topic>"
+    "<wsnt:Message>"
+    "<tt:Message UtcTime=\"2026-01-01T00:00:01Z\""
+    "            PropertyOperation=\"Changed\">"
+    "<tt:Source>"
+    "<tt:SimpleItem Name=\"VideoSourceConfigurationToken\" Value=\"1\"/>"
+    "<tt:SimpleItem Name=\"Rule\" Value=\"MotionRule\"/>"
+    "</tt:Source>"
+    "<tt:Data>"
+    "<tt:SimpleItem Name=\"IsMotion\" Value=\"true\"/>"
+    "</tt:Data>"
+    "</tt:Message>"
+    "</wsnt:Message>"
+    "</wsnt:NotificationMessage>"
+    "</tev:PullMessagesResponse>"
+    "</SOAP-ENV:Body>"
+    "</SOAP-ENV:Envelope>";
+}
+
+std::string make_renew_response() {
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<SOAP-ENV:Envelope"
+    "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+    "  xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\">"
+    "<SOAP-ENV:Body>"
+    "<wsnt:RenewResponse>"
+    "<wsnt:TerminationTime>2026-01-01T00:04:00Z</wsnt:TerminationTime>"
+    "</wsnt:RenewResponse>"
+    "</SOAP-ENV:Body>"
+    "</SOAP-ENV:Envelope>";
+}
+
+// Build a PullMessages response with a topic-less IsMotion event.
+// style=1: IsMotion + Rule containing "Motion" -> CellMotionDetector/Motion
+// style=2: State + Source containing "VideoSourceToken" -> VideoSource/MotionAlarm
+std::string make_topicless_motion_event(int style, bool motion_on) {
+  if (style == 1) {
+    std::string is_motion = motion_on ? "true" : "false";
+    return
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+      "<SOAP-ENV:Envelope"
+      "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+      "  xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+      "  xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+      "  xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+      "<SOAP-ENV:Body>"
+      "<tev:PullMessagesResponse>"
+      "<tev:CurrentTime>2026-01-01T00:00:00Z</tev:CurrentTime>"
+      "<tev:TerminationTime>2026-01-01T00:02:00Z</tev:TerminationTime>"
+      "<wsnt:NotificationMessage>"
+      "<wsnt:Message>"
+      "<tt:Message UtcTime=\"2026-01-01T00:00:01Z\""
+      "            PropertyOperation=\"Changed\">"
+      "<tt:Source>"
+      "<tt:SimpleItem Name=\"Rule\" Value=\"MotionDetector\"/>"
+      "</tt:Source>"
+      "<tt:Data>"
+      "<tt:SimpleItem Name=\"IsMotion\" Value=\"" + is_motion + "\"/>"
+      "</tt:Data>"
+      "</tt:Message>"
+      "</wsnt:Message>"
+      "</wsnt:NotificationMessage>"
+      "</tev:PullMessagesResponse>"
+      "</SOAP-ENV:Body>"
+      "</SOAP-ENV:Envelope>";
+  }
+  // style == 2: State + VideoSourceToken
+  std::string state = motion_on ? "true" : "false";
+  return
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<SOAP-ENV:Envelope"
+    "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+    "  xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
+    "  xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
+    "  xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+    "<SOAP-ENV:Body>"
+    "<tev:PullMessagesResponse>"
+    "<tev:CurrentTime>2026-01-01T00:00:00Z</tev:CurrentTime>"
+    "<tev:TerminationTime>2026-01-01T00:02:00Z</tev:TerminationTime>"
+    "<wsnt:NotificationMessage>"
+    "<wsnt:Message>"
+    "<tt:Message UtcTime=\"2026-01-01T00:00:01Z\""
+    "            PropertyOperation=\"Changed\">"
+    "<tt:Source>"
+    "<tt:SimpleItem Name=\"Source\" Value=\"VideoSourceToken\"/>"
+    "</tt:Source>"
+    "<tt:Data>"
+    "<tt:SimpleItem Name=\"State\" Value=\"" + state + "\"/>"
+    "</tt:Data>"
+    "</tt:Message>"
+    "</wsnt:Message>"
+    "</wsnt:NotificationMessage>"
+    "</tev:PullMessagesResponse>"
+    "</SOAP-ENV:Body>"
+    "</SOAP-ENV:Envelope>";
+}
+
+}  // namespace
+
+// ============================================================
+// EventServiceFallbackEmulator
+// ============================================================
+EventServiceFallbackEmulator::EventServiceFallbackEmulator()
+  : OnvifCameraEmulator("192.168.100.201") {}
+
+std::pair<int, std::string> EventServiceFallbackEmulator::handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const auto tail = action_tail(soap_action);
+
+  if (tail == "GetServicesRequest") {
+    // Advertise /onvif/event_service as the events XAddr (which will fail).
+    std::string resp =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+      "<SOAP-ENV:Envelope"
+      "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+      "  xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\""
+      "  xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+      "<SOAP-ENV:Body>"
+      "<tds:GetServicesResponse>"
+      "<tds:Service>"
+      "<tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace>"
+      "<tds:XAddr>http://" + real_ip_ + "/onvif/event_service</tds:XAddr>"
+      "<tds:Version>"
+      "<tt:Major>2</tt:Major><tt:Minor>60</tt:Minor>"
+      "</tds:Version>"
+      "</tds:Service>"
+      "</tds:GetServicesResponse>"
+      "</SOAP-ENV:Body>"
+      "</SOAP-ENV:Envelope>";
+    return {200, rewrite_urls(resp)};
+  }
+
+  // /onvif/event_service returns HTTP 500 empty body.
+  if (path == "/onvif/event_service") {
+    return {500, ""};
+  }
+
+  // /onvif/events_service works normally.
+  if (path == "/onvif/events_service") {
+    if (tail == "CreatePullPointSubscriptionRequest") {
+      subscribed_ = true;
+      std::string addr = "http://" + real_ip_ + "/onvif/events_service";
+      return {200, rewrite_urls(make_create_sub_response(addr))};
+    }
+    if (tail == "PullMessagesRequest") {
+      return {200, rewrite_urls(make_pull_motion_event())};
+    }
+    if (tail == "RenewRequest") {
+      return {200, rewrite_urls(make_renew_response())};
+    }
+  }
+
+  return {400, ""};
+}
+
+// ============================================================
+// GetServicesFailsFallbackEmulator
+// ============================================================
+GetServicesFailsFallbackEmulator::GetServicesFailsFallbackEmulator()
+  : OnvifCameraEmulator("192.168.100.202") {}
+
+std::pair<int, std::string> GetServicesFailsFallbackEmulator::handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const auto tail = action_tail(soap_action);
+
+  // GetServices always fails.
+  if (tail == "GetServicesRequest") {
+    return {500, ""};
+  }
+
+  // /onvif/event_service returns HTTP 500 empty body.
+  if (path == "/onvif/event_service") {
+    return {500, ""};
+  }
+
+  // /onvif/events_service works normally.
+  if (path == "/onvif/events_service") {
+    if (tail == "CreatePullPointSubscriptionRequest") {
+      subscribed_ = true;
+      std::string addr = "http://" + real_ip_ + "/onvif/events_service";
+      return {200, rewrite_urls(make_create_sub_response(addr))};
+    }
+    if (tail == "PullMessagesRequest") {
+      return {200, rewrite_urls(make_pull_motion_event())};
+    }
+    if (tail == "RenewRequest") {
+      return {200, rewrite_urls(make_renew_response())};
+    }
+  }
+
+  return {400, ""};
+}
+
+// ============================================================
+// GenericMotionTopiclessEmulator
+// ============================================================
+GenericMotionTopiclessEmulator::GenericMotionTopiclessEmulator(int style)
+  : OnvifCameraEmulator("192.168.100.20" + std::to_string(style)),
+    style_(style) {}
+
+std::pair<int, std::string> GenericMotionTopiclessEmulator::handle(
+    const std::string& path,
+    const std::string& soap_action,
+    const std::string& body) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const auto tail = action_tail(soap_action);
+
+  if (tail == "GetServicesRequest") {
+    std::string resp =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+      "<SOAP-ENV:Envelope"
+      "  xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\""
+      "  xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\""
+      "  xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
+      "<SOAP-ENV:Body>"
+      "<tds:GetServicesResponse>"
+      "<tds:Service>"
+      "<tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace>"
+      "<tds:XAddr>http://" + real_ip_ + "/onvif/event_service</tds:XAddr>"
+      "<tds:Version>"
+      "<tt:Major>2</tt:Major><tt:Minor>60</tt:Minor>"
+      "</tds:Version>"
+      "</tds:Service>"
+      "</tds:GetServicesResponse>"
+      "</SOAP-ENV:Body>"
+      "</SOAP-ENV:Envelope>";
+    return {200, rewrite_urls(resp)};
+  }
+
+  if (tail == "CreatePullPointSubscriptionRequest") {
+    subscribed_ = true;
+    std::string addr = "http://" + real_ip_ + "/onvif/event_service";
+    return {200, rewrite_urls(make_create_sub_response(addr))};
+  }
+
+  if (tail == "PullMessagesRequest") {
+    // Alternate between motion-on and motion-off.
+    bool motion_on = (event_seq_ % 2 == 0);
+    ++event_seq_;
+    return {200, rewrite_urls(make_topicless_motion_event(style_, motion_on))};
+  }
+
+  if (tail == "RenewRequest") {
+    return {200, rewrite_urls(make_renew_response())};
+  }
+
+  return {400, ""};
+}

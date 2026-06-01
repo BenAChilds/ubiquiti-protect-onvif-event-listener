@@ -23,6 +23,20 @@ echo 'ONVIF_RECORDER_FLAGS="--verbose --detect_override"' \
 systemctl restart onvif-recorder
 ```
 
+## ONVIF event endpoint fallback
+
+The recorder automatically tries multiple ONVIF event service endpoint paths
+when subscribing to camera events. This handles cameras that use non-standard
+endpoint paths without requiring any manual configuration.
+
+**Candidate order:**
+1. URL discovered via `GetServices` (if present)
+2. `/onvif/event_service` (most common)
+3. `/onvif/events_service` (used by some cameras, e.g. Swann NHD-887F)
+
+The first endpoint where `CreatePullPointSubscription` succeeds is used.
+If all candidates fail, the recorder retries the full list on the next cycle.
+
 ## Detection object types
 
 The recorder maps ONVIF camera events to four UniFi Protect smart-detection types:

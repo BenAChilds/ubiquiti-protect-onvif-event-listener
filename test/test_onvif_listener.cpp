@@ -459,6 +459,137 @@ static void test_axis_ref_params() {
 }
 
 // ============================================================
+// Test: /onvif/event_service returns HTTP 500, then /onvif/events_service
+// succeeds.  Verifies the recorder tries both endpoint paths.
+// ============================================================
+static void test_event_service_fallback() {
+  EventServiceFallbackEmulator emu;
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "password";
+  cfg.retry_interval_sec = 1;
+
+  auto r = collect({cfg}, 3, std::chrono::seconds(30));
+
+  CHECK(!r.timed_out, "fallback: timed out waiting for events");
+  CHECK(r.events.size() >= 3, "fallback: expected >= 3 events");
+
+  for (const auto& ev : r.events) {
+    if (ev.topic.empty()) continue;
+    CHECK(ev.topic.find("CellMotionDetector") != std::string::npos,
+          "fallback: unexpected topic: " + ev.topic);
+  }
+}
+
+// ============================================================
+// Test: GetServices fails, /onvif/event_service fails,
+// /onvif/events_service succeeds.  Verifies the recorder falls
+// back through all candidates even when discovery fails.
+// ============================================================
+static void test_getservices_fails_fallback() {
+  GetServicesFailsFallbackEmulator emu;
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "password";
+  cfg.retry_interval_sec = 1;
+
+  auto r = collect({cfg}, 3, std::chrono::seconds(30));
+
+  CHECK(!r.timed_out, "getservices-fails: timed out waiting for events");
+  CHECK(r.events.size() >= 3, "getservices-fails: expected >= 3 events");
+
+  for (const auto& ev : r.events) {
+    if (ev.topic.empty()) continue;
+    CHECK(ev.topic.find("CellMotionDetector") != std::string::npos,
+          "getservices-fails: unexpected topic: " + ev.topic);
+  }
+}
+
+// ============================================================
+// Test: Topic-less IsMotion events are classified as generic
+// CellMotionDetector/Motion motion start/end.
+// ============================================================
+static void test_topicless_ismotion() {
+  GenericMotionTopiclessEmulator emu(/*style=*/1);
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "password";
+  cfg.retry_interval_sec = 1;
+
+  auto r = collect({cfg}, 4, std::chrono::seconds(30));
+
+  CHECK(!r.timed_out, "topicless-ismotion: timed out");
+  CHECK(r.events.size() >= 4, "topicless-ismotion: expected >= 4 events");
+
+  bool saw_motion_on  = false;
+  bool saw_motion_off = false;
+  for (const auto& ev : r.events) {
+    if (ev.topic.empty()) continue;
+    CHECK(ev.topic == "tns1:RuleEngine/CellMotionDetector/Motion",
+          "topicless-ismotion: unexpected topic: " + ev.topic);
+    CHECK(ev.property_op == "Changed",
+          "topicless-ismotion: unexpected op: " + ev.property_op);
+    auto it = ev.data.find("IsMotion");
+    CHECK(it != ev.data.end(),
+          "topicless-ismotion: missing IsMotion in data");
+    if (it != ev.data.end()) {
+      if (it->second == "true")  saw_motion_on  = true;
+      if (it->second == "false") saw_motion_off = true;
+    }
+  }
+  CHECK(saw_motion_on,  "topicless-ismotion: expected IsMotion=true");
+  CHECK(saw_motion_off, "topicless-ismotion: expected IsMotion=false");
+}
+
+// ============================================================
+// Test: Topic-less State/VideoSource events are classified as
+// generic VideoSource/MotionAlarm motion start/end.
+// ============================================================
+static void test_topicless_state_videosource() {
+  GenericMotionTopiclessEmulator emu(/*style=*/2);
+  emu.start();
+
+  onvif::CameraConfig cfg;
+  cfg.ip                 = emu.local_address();
+  cfg.user               = "admin";
+  cfg.password           = "password";
+  cfg.retry_interval_sec = 1;
+
+  auto r = collect({cfg}, 4, std::chrono::seconds(30));
+
+  CHECK(!r.timed_out, "topicless-state: timed out");
+  CHECK(r.events.size() >= 4, "topicless-state: expected >= 4 events");
+
+  bool saw_on  = false;
+  bool saw_off = false;
+  for (const auto& ev : r.events) {
+    if (ev.topic.empty()) continue;
+    CHECK(ev.topic == "tns1:VideoSource/MotionAlarm",
+          "topicless-state: unexpected topic: " + ev.topic);
+    CHECK(ev.property_op == "Changed",
+          "topicless-state: unexpected op: " + ev.property_op);
+    auto it = ev.data.find("State");
+    CHECK(it != ev.data.end(),
+          "topicless-state: missing State in data");
+    if (it != ev.data.end()) {
+      if (it->second == "true")  saw_on  = true;
+      if (it->second == "false") saw_off = true;
+    }
+  }
+  CHECK(saw_on,  "topicless-state: expected State=true");
+  CHECK(saw_off, "topicless-state: expected State=false");
+}
+
+// ============================================================
 // Test: Reolink camera with malformed GetServices XML
 //
 // The Reolink RLC-811A returns GetServices XML containing an undeclared
@@ -678,6 +809,14 @@ int main(int argc, char* argv[]) {
            [&] { test_both_cameras(hikvision_jsonl, dahua_jsonl); });
   run_test("axis_ref_params",
            [] { test_axis_ref_params(); });
+  run_test("event_service_fallback",
+           [] { test_event_service_fallback(); });
+  run_test("getservices_fails_fallback",
+           [] { test_getservices_fails_fallback(); });
+  run_test("topicless_ismotion",
+           [] { test_topicless_ismotion(); });
+  run_test("topicless_state_videosource",
+           [] { test_topicless_state_videosource(); });
 
   onvif::global_cleanup();
 
