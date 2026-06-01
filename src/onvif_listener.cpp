@@ -457,6 +457,14 @@ class CameraWorker {
                     ? "empty subscription URL"
                     : std::string(sub_or.status().message()));
       }
+      // Guard: create_subscription returns ok() with empty url when the
+      // camera replied HTTP 200 but the response body had no valid
+      // SubscriptionReference.  Convert to an error so the retry logic
+      // below fires correctly on the next iteration.
+      if (sub_or.ok() && sub_or->url.empty()) {
+        sub_or = absl::InternalError(
+            "all event service candidates returned empty subscription URL");
+      }
       if (!sub_or.ok()) {
         if (consecutive_failures == 0)
           streak_start = std::chrono::steady_clock::now();
@@ -733,10 +741,11 @@ class CameraWorker {
 
     const HttpResponse& resp = *resp_or;
     if (resp.status_code != 200) {
-      LOG_FIRST_N(INFO, 1) << '[' << cfg_.ip
-                           << "] CreatePullPointSubscription HTTP "
-                           << resp.status_code << ": "
-                           << resp.body.substr(0, 300);
+      LOG(ERROR) << '[' << cfg_.ip
+                 << "] CreatePullPointSubscription HTTP "
+                 << resp.status_code << " on " << ev_url
+                 << "\n  request:\n" << soap
+                 << "\n  response:\n" << resp.body;
       // Event-subscription auth is gated on a dedicated ONVIF user with
       // Administrator privileges on most Hikvision firmware (and several
       // OEM rebadges).  GetServices works with the camera's web-UI admin,
@@ -773,8 +782,11 @@ class CameraWorker {
 
     auto doc_or = XmlDoc::Create(resp.body);
     if (!doc_or.ok()) {
-      LOG(ERROR) << '[' << cfg_.ip << "] parse sub URL: "
-                 << doc_or.status().message();
+      LOG(ERROR) << '[' << cfg_.ip
+                 << "] CreatePullPointSubscription XML parse error on "
+                 << ev_url << ": " << doc_or.status().message()
+                 << "\n  request:\n" << soap
+                 << "\n  response:\n" << resp.body;
       return Subscription{};
     }
 
@@ -785,6 +797,14 @@ class CameraWorker {
     sub.ref_params = doc_or->inner_xml(
       "//*[local-name()='SubscriptionReference']"
       "/*[local-name()='ReferenceParameters']");
+    if (sub.url.empty()) {
+      LOG(ERROR) << '[' << cfg_.ip
+                 << "] CreatePullPointSubscription: no SubscriptionReference/Address"
+                    " in response from " << ev_url
+                 << "\n  request:\n" << soap
+                 << "\n  response:\n" << resp.body;
+      return Subscription{};
+    }
     if (!sub.ref_params.empty())
       LOG(INFO) << '[' << cfg_.ip << "] subscription has ReferenceParameters";
     // Successful subscription -- whatever auth we used here works.
