@@ -385,32 +385,6 @@ static std::string make_empty_topic_non_motion_response(const std::string& utc_t
     "</tev:PullMessagesResponse>"
     "</s:Body>"
     "</s:Envelope>";
-  const std::string val = state ? "true" : "false";
-  return
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-    "<s:Envelope"
-    " xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
-    " xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\""
-    " xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\""
-    " xmlns:tt=\"http://www.onvif.org/ver10/schema\">"
-    "<s:Body>"
-    "<tev:PullMessagesResponse>"
-    "<wsnt:NotificationMessage>"
-    "<wsnt:Topic>tns1:UserAlarm/IVA/HumanShapeDetect</wsnt:Topic>"
-    "<wsnt:Message>"
-    "<tt:Message UtcTime=\"" + utc_time + "\" PropertyOperation=\"Changed\">"
-    "<tt:Source>"
-    "<tt:SimpleItem Name=\"VideoSourceConfigurationToken\" Value=\"VideoSourceMain\"/>"
-    "</tt:Source>"
-    "<tt:Data>"
-    "<tt:SimpleItem Name=\"State\" Value=\"" + val + "\"/>"
-    "</tt:Data>"
-    "</tt:Message>"
-    "</wsnt:Message>"
-    "</wsnt:NotificationMessage>"
-    "</tev:PullMessagesResponse>"
-    "</s:Body>"
-    "</s:Envelope>";
 }
 
 // ============================================================
