@@ -204,23 +204,45 @@ std::string build_soap(
 // some cameras (e.g. Swann NHD-887F / Hikvision-OEM) require for
 // CreatePullPointSubscription.  Differences from the standard build_soap():
 //
+//   - No XML declaration.
 //   - Uses "wsa:" prefix for WS-Addressing (not "wsa5:").
 //   - Includes wsa:MessageID (urn:uuid:...).
 //   - Header element order: Action, MessageID, To, Security.
 //   - No mustUnderstand on Security or Action/To.
 //   - No WSU:Timestamp wrapper; wsu:Created lives directly inside
 //     UsernameToken.
+//   - Created timestamp uses +00:00 UTC offset (not trailing Z).
 std::string build_soap_zeep(
   const std::string& username,
   const std::string& password,
   const std::string& wsa_to,
   const std::string& wsa_action,
   const std::string& ref_params = "") {
-  WSSecurity ws = make_wssecurity(password);
+  // Zeep uses +00:00 UTC offset instead of trailing Z.
+  // The digest must be computed against the exact string inserted into XML.
+  std::time_t t = std::time(nullptr);
+  std::tm tm{};
+  gmtime_r(&t, &tm);
+  char created_buf[32];
+  std::strftime(created_buf, sizeof(created_buf),
+                "%Y-%m-%dT%H:%M:%S+00:00", &tm);
+  std::string created(created_buf);
+
+  unsigned char nonce[16];
+  RAND_bytes(nonce, sizeof(nonce));
+  std::string nonce_b64 = base64_encode(nonce, sizeof(nonce));
+
+  std::vector<unsigned char> pre;
+  pre.reserve(16 + created.size() + password.size());
+  pre.insert(pre.end(), nonce, nonce + 16);
+  pre.insert(pre.end(), created.begin(), created.end());
+  pre.insert(pre.end(), password.begin(), password.end());
+  unsigned char hash[SHA_DIGEST_LENGTH];
+  SHA1(pre.data(), pre.size(), hash);
+  std::string digest = base64_encode(hash, SHA_DIGEST_LENGTH);
 
   std::ostringstream s;
-  s << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-       "<soap-env:Envelope"
+  s << "<soap-env:Envelope"
        " xmlns:soap-env=\"http://www.w3.org/2003/05/soap-envelope\">"
        "<soap-env:Header"
        " xmlns:wsa=\"http://www.w3.org/2005/08/addressing\">"
@@ -233,11 +255,11 @@ std::string build_soap_zeep(
        "<wsse:UsernameToken>"
        "<wsse:Username>" << username << "</wsse:Username>"
        "<wsse:Password Type=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest\">"  // NOLINT(whitespace/line_length)
-    << ws.digest << "</wsse:Password>"
+    << digest << "</wsse:Password>"
        "<wsse:Nonce EncodingType=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary\">"  // NOLINT(whitespace/line_length)
-    << ws.nonce_b64 << "</wsse:Nonce>"
+    << nonce_b64 << "</wsse:Nonce>"
        "<wsu:Created xmlns:wsu=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">"  // NOLINT(whitespace/line_length)
-    << ws.created << "</wsu:Created>"
+    << created << "</wsu:Created>"
        "</wsse:UsernameToken>"
        "</wsse:Security>";
 
